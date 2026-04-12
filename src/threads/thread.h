@@ -5,6 +5,8 @@
 #include <list.h>
 #include <stdint.h>
 
+struct lock;
+
 /** States in a thread's life cycle. */
 enum thread_status
   {
@@ -88,14 +90,20 @@ struct thread
     char name[16];                      /**< Name (for debugging purposes). */
     uint8_t *stack;                     /**< Saved stack pointer. */
     int priority;                       /**< Priority. */
+    int original_priority;              /**< Base priority before donation. */
     struct list_elem allelem;           /**< List element for all threads list. */
 
     /* Shared between thread.c and synch.c. */
     struct list_elem elem;              /**< List element. */
+    struct list donors;                 /**< Donors waiting on locks we hold. */
+    struct list_elem donor_elem;        /**< This thread in another donor list. */
+    struct lock *waiting_lock;          /**< Lock this thread is waiting on. */
+    int64_t wakeup_tick;                /**< Tick at which blocked sleep ends. */
 
 #ifdef USERPROG
     /* Owned by userprog/process.c. */
     uint32_t *pagedir;                  /**< Page directory. */
+    int exit_status;                    /**< Process exit status. */
 #endif
 
     /* Owned by thread.c. */
@@ -132,6 +140,10 @@ void thread_foreach (thread_action_func *, void *);
 
 int thread_get_priority (void);
 void thread_set_priority (int);
+void thread_update_priority (struct thread *);
+bool thread_priority_more (const struct list_elem *,
+                           const struct list_elem *,
+                           void *);
 
 int thread_get_nice (void);
 void thread_set_nice (int);

@@ -20,6 +20,10 @@
 
 static thread_func start_process NO_RETURN;
 static bool load (const char *cmdline, void (**eip) (void), void **esp);
+static bool push_stack_bytes (void **esp, const void *src, size_t size);
+static bool setup_arguments (void **esp, char **argv, int argc);
+
+#define MAX_CMD_ARGS 128
 
 /** Starts a new thread running a user program loaded from
    FILENAME.  The new thread may be scheduled (and may even exit)
@@ -29,6 +33,9 @@ tid_t
 process_execute (const char *file_name) 
 {
   char *fn_copy;
+  char *name_copy;
+  char *program_name;
+  char *save_ptr;
   tid_t tid;
 
   /* Make a copy of FILE_NAME.
@@ -38,8 +45,24 @@ process_execute (const char *file_name)
     return TID_ERROR;
   strlcpy (fn_copy, file_name, PGSIZE);
 
+  name_copy = palloc_get_page (0);
+  if (name_copy == NULL)
+    {
+      palloc_free_page (fn_copy);
+      return TID_ERROR;
+    }
+  strlcpy (name_copy, file_name, PGSIZE);
+  program_name = strtok_r (name_copy, " ", &save_ptr);
+  if (program_name == NULL)
+    {
+      palloc_free_page (name_copy);
+      palloc_free_page (fn_copy);
+      return TID_ERROR;
+    }
+
   /* Create a new thread to execute FILE_NAME. */
-  tid = thread_create (file_name, PRI_DEFAULT, start_process, fn_copy);
+  tid = thread_create (program_name, PRI_DEFAULT, start_process, fn_copy);
+  palloc_free_page (name_copy);
   if (tid == TID_ERROR)
     palloc_free_page (fn_copy); 
   return tid;
@@ -50,19 +73,45 @@ process_execute (const char *file_name)
 static void
 start_process (void *file_name_)
 {
-  char *file_name = file_name_;
+  char *cmdline = file_name_;
+  char *argv[MAX_CMD_ARGS];
+  char *save_ptr;
+  char *token;
+  int argc;
+  bool arg_ok;
   struct intr_frame if_;
   bool success;
+  argc = 0;
+  arg_ok = true;
+  for (token = strtok_r (cmdline, " ", &save_ptr);
+       token != NULL;
+       token = strtok_r (NULL, " ", &save_ptr))
+    {
+      if (argc >= MAX_CMD_ARGS)
+        {
+          arg_ok = false;
+          break;
+        }
+      argv[argc++] = token;
+    }
+
+  if (!arg_ok || argc == 0)
+    {
+      palloc_free_page (cmdline);
+      thread_exit ();
+    }
 
   /* Initialize interrupt frame and load executable. */
   memset (&if_, 0, sizeof if_);
   if_.gs = if_.fs = if_.es = if_.ds = if_.ss = SEL_UDSEG;
   if_.cs = SEL_UCSEG;
   if_.eflags = FLAG_IF | FLAG_MBS;
-  success = load (file_name, &if_.eip, &if_.esp);
+  success = load (argv[0], &if_.eip, &if_.esp);
+  if (success)
+    success = setup_arguments (&if_.esp, argv, argc);
 
   /* If load failed, quit. */
-  palloc_free_page (file_name);
+  palloc_free_page (cmdline);
   if (!success) 
     thread_exit ();
 
@@ -97,6 +146,9 @@ process_exit (void)
 {
   struct thread *cur = thread_current ();
   uint32_t *pd;
+
+  if (cur->pagedir != NULL)
+    printf ("%s: exit(%d)\n", cur->name, cur->exit_status);
 
   /* Destroy the current process's page directory and switch back
      to the kernel-only page directory. */
@@ -314,6 +366,71 @@ load (const char *file_name, void (**eip) (void), void **esp)
   /* We arrive here whether the load is successful or not. */
   file_close (file);
   return success;
+}
+
+static bool
+push_stack_bytes (void **esp, const void *src, size_t size)
+{
+  uintptr_t esp_val = (uintptr_t) *esp;
+  uintptr_t stack_bottom = (uintptr_t) PHYS_BASE - PGSIZE;
+
+  if (size == 0)
+    return true;
+  if (esp_val < stack_bottom + size)
+    return false;
+
+  esp_val -= size;
+  *esp = (void *) esp_val;
+  if (src != NULL)
+    memcpy (*esp, src, size);
+  else
+    memset (*esp, 0, size);
+  return true;
+}
+
+static bool
+setup_arguments (void **esp, char **argv, int argc)
+{
+  int i;
+  void *arg_addr[MAX_CMD_ARGS];
+  size_t padding;
+  char *null_ptr = NULL;
+  char **argv_ptr;
+  void *return_addr = NULL;
+
+  ASSERT (argc <= MAX_CMD_ARGS);
+
+  for (i = argc - 1; i >= 0; i--)
+    {
+      size_t len = strlen (argv[i]) + 1;
+      if (!push_stack_bytes (esp, argv[i], len))
+        return false;
+      arg_addr[i] = *esp;
+    }
+
+  padding = (uintptr_t) *esp % 4;
+  if (!push_stack_bytes (esp, NULL, padding))
+    return false;
+
+  if (!push_stack_bytes (esp, &null_ptr, sizeof null_ptr))
+    return false;
+
+  for (i = argc - 1; i >= 0; i--)
+    {
+      char *arg = arg_addr[i];
+      if (!push_stack_bytes (esp, &arg, sizeof arg))
+        return false;
+    }
+
+  argv_ptr = (char **) *esp;
+  if (!push_stack_bytes (esp, &argv_ptr, sizeof argv_ptr))
+    return false;
+  if (!push_stack_bytes (esp, &argc, sizeof argc))
+    return false;
+  if (!push_stack_bytes (esp, &return_addr, sizeof return_addr))
+    return false;
+
+  return true;
 }
 
 /** load() helpers. */

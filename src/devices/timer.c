@@ -19,6 +19,7 @@
 
 /** Number of timer ticks since OS booted. */
 static int64_t ticks;
+static struct list sleep_list;
 
 /** Number of loops per timer tick.
    Initialized by timer_calibrate(). */
@@ -37,6 +38,17 @@ timer_init (void)
 {
   pit_configure_channel (0, 2, TIMER_FREQ);
   intr_register_ext (0x20, timer_interrupt, "8254 Timer");
+  list_init (&sleep_list);
+}
+
+static bool
+wakeup_less (const struct list_elem *a,
+             const struct list_elem *b,
+             void *aux UNUSED)
+{
+  const struct thread *ta = list_entry (a, struct thread, elem);
+  const struct thread *tb = list_entry (b, struct thread, elem);
+  return ta->wakeup_tick < tb->wakeup_tick;
 }
 
 /** Calibrates loops_per_tick, used to implement brief delays. */
@@ -89,11 +101,20 @@ timer_elapsed (int64_t then)
 void
 timer_sleep (int64_t ticks) 
 {
-  int64_t start = timer_ticks ();
+  int64_t wakeup_tick;
+  enum intr_level old_level;
 
   ASSERT (intr_get_level () == INTR_ON);
-  while (timer_elapsed (start) < ticks) 
-    thread_yield ();
+  if (ticks <= 0)
+    return;
+
+  wakeup_tick = timer_ticks () + ticks;
+  old_level = intr_disable ();
+  thread_current ()->wakeup_tick = wakeup_tick;
+  list_insert_ordered (&sleep_list, &thread_current ()->elem,
+                       wakeup_less, NULL);
+  thread_block ();
+  intr_set_level (old_level);
 }
 
 /** Sleeps for approximately MS milliseconds.  Interrupts must be
@@ -170,8 +191,22 @@ timer_print_stats (void)
 static void
 timer_interrupt (struct intr_frame *args UNUSED)
 {
+  bool should_preempt = false;
   ticks++;
+  while (!list_empty (&sleep_list))
+    {
+      struct thread *t = list_entry (list_front (&sleep_list),
+                                     struct thread, elem);
+      if (t->wakeup_tick > ticks)
+        break;
+      list_pop_front (&sleep_list);
+      thread_unblock (t);
+      if (t->priority > thread_current ()->priority)
+        should_preempt = true;
+    }
   thread_tick ();
+  if (should_preempt)
+    intr_yield_on_return ();
 }
 
 /** Returns true if LOOPS iterations waits for more than one timer
