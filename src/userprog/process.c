@@ -137,6 +137,11 @@ start_process (void *file_name_)
 int
 process_wait (tid_t child_tid UNUSED) 
 {
+  /* Temporary busy-wait so the kernel doesn't exit before
+     the user process finishes.  Replace with a proper
+     semaphore-based implementation for problem 2-2. */
+  while (true)
+    thread_yield ();
   return -1;
 }
 
@@ -376,7 +381,7 @@ push_stack_bytes (void **esp, const void *src, size_t size)
 
   if (size == 0)
     return true;
-  if (esp_val < stack_bottom + size)
+  if (esp_val - size < stack_bottom)
     return false;
 
   esp_val -= size;
