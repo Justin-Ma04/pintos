@@ -4,6 +4,7 @@
 #include <debug.h>
 #include <list.h>
 #include <stdint.h>
+#include "threads/synch.h"
 
 struct lock;
 
@@ -104,6 +105,8 @@ struct thread
     /* Owned by userprog/process.c. */
     uint32_t *pagedir;                  /**< Page directory. */
     int exit_status;                    /**< Process exit status. */
+    struct semaphore exit_sema;         /**< Upped by child on exit; parent
+                                             downs this in process_wait(). */
 #endif
 
     /* Owned by thread.c. */

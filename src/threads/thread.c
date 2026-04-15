@@ -505,6 +505,10 @@ init_thread (struct thread *t, const char *name, int priority)
   list_init (&t->donors);
 #ifdef USERPROG
   t->exit_status = -1;
+  /* Initialize the exit semaphore to 0; the parent will sema_down()
+     on it in process_wait() and the child will sema_up() it in
+     process_exit() once it has recorded its exit status. */
+  sema_init (&t->exit_sema, 0);
 #endif
   t->magic = THREAD_MAGIC;
 
